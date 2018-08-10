@@ -7,7 +7,6 @@
  * software. If not, contact the copyright holder above.
  */
 
-#include <interface/vcos/vcos.h>
 #include <interface/mmal/mmal.h>
 #include <interface/mmal/util/mmal_connection.h>
 #include <interface/mmal/util/mmal_util.h>
@@ -17,9 +16,6 @@
 #include <errno.h>
 
 #include "common.h"
-
-static MMAL_COMPONENT_T *cp_source, *cp_dest;
-static int source_output_port = 0;
 
 static void cb_control(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffer)
 {
@@ -118,6 +114,27 @@ static int match_string_fuzzy(const char * const *array, int n,
     return -ENOENT;
 }
 
+static void show_stats(const char * const name, MMAL_PORT_T * const port,
+        const double elapsed)
+{
+    MMAL_PARAMETER_STATISTICS_T param = {
+        .hdr = {
+            .id = MMAL_PARAMETER_STATISTICS,
+            .size = sizeof(param),
+        },
+    };
+
+    check_mmal(mmal_port_parameter_get(port, &param.hdr));
+
+    print_info("%s: buffer_count: %u\n", name,  param.buffer_count);
+    print_info("%s: frame_count: %u\n", name, param.frame_count);
+    print_info("%s: frames_skipped: %u\n", name, param.frames_skipped);
+    print_info("%s: frames_discarded: %u\n", name, param.frames_discarded);
+    print_info("%s: total_bytes: %lld\n", name, param.total_bytes);
+    print_info("%s: %f [frame/s]\n", name, param.frame_count / elapsed);
+    print_info("%s: %e [B/s]\n", name, param.total_bytes / elapsed);
+}
+
 int main(int argc, char *argv[])
 {
     int opt, idx;
@@ -127,8 +144,10 @@ int main(int argc, char *argv[])
     int width = 1920, height = 1080;
     int msec = 1000;
     int camera_num = -1;
+    int source_output_port = 0;
+    MMAL_COMPONENT_T *cp_source, *cp_dest;
     MMAL_CONNECTION_T *conn_source_dest;
-    double start, end;
+    double start, elapsed;
 
     /* Encoding */
     enum encoding {
@@ -379,34 +398,16 @@ int main(int argc, char *argv[])
         (void) nanosleep(&t, NULL);
     }
     check_mmal(mmal_connection_disable(conn_source_dest));
-    end = get_time();
+    elapsed = get_time() - start;
 
     /*
-     * Only from vc.ril.source and vc.ril.video_render can get the stats here.
-     * Note that the latter always sets total_bytes to 0.
+     * Only vc.ril.source and vc.ril.video_render have an ability to query
+     * stats here.  Note that the latter always sets total_bytes to 0.
      */
-    if (source == SOURCE_SOURCE || dest == DEST_RENDER) {
-        MMAL_PARAMETER_STATISTICS_T param = {
-            .hdr = {
-                .id = MMAL_PARAMETER_STATISTICS,
-                .size = sizeof(param),
-            },
-        };
-
-        if (source == SOURCE_SOURCE)
-            check_mmal(mmal_port_parameter_get(
-                    cp_source->output[source_output_port], &param.hdr));
-        else /* i.e. dest == DEST_RENDER */
-            check_mmal(mmal_port_parameter_get(cp_dest->input[0], &param.hdr));
-
-        print_info("buffer_count: %u\n", param.buffer_count);
-        print_info("frame_count: %u\n", param.frame_count);
-        print_info("frames_skipped: %u\n", param.frames_skipped);
-        print_info("frames_discarded: %u\n", param.frames_discarded);
-        print_info("total_bytes: %lld\n", param.total_bytes);
-        print_info("%f [frame/s]\n", param.frame_count / (end - start));
-        print_info("%e [B/s]\n", param.total_bytes / (end - start));
-    }
+    if (source == SOURCE_SOURCE)
+        show_stats("source", cp_source->output[source_output_port], elapsed);
+    if (dest == DEST_RENDER)
+        show_stats("dest", cp_dest->input[0], elapsed);
 
     check_mmal(mmal_connection_destroy(conn_source_dest));
     check_mmal(mmal_component_destroy(cp_dest));
